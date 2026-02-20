@@ -8,20 +8,23 @@ class AudioEngine:
         self.tracks = []
         self.stream = None
         self.samplerate = 44100
-        self.position = 0  # position de lecture globale
+        self.position = 0
 
     def add_track(self, file_path, volume=1.0):
         try:
             data, samplerate = sf.read(file_path, dtype="float32")
 
-            # Conversion stéréo -> mono (très important pour éviter les erreurs broadcast)
+            # Convertir en mono si nécessaire
             if data.ndim == 2:
                 data = data.mean(axis=1)
 
             self.tracks.append({
                 "data": data,
                 "volume": volume,
-                "length": len(data)
+                "length": len(data),
+                "mute": False,
+                "solo": False,
+                "pan": 0.0  # -1 = gauche, 0 = centre, 1 = droite
             })
 
             self.samplerate = samplerate
@@ -34,53 +37,59 @@ class AudioEngine:
         self.tracks.clear()
         self.position = 0
 
+    # ===== CALLBACK AUDIO =====
     def _callback(self, outdata, frames, time, status):
         try:
             if not self.tracks:
                 outdata[:] = 0
                 return
 
-            # Buffer de mixage (mono)
-            mix = np.zeros(frames, dtype="float32")
+            mix = np.zeros((frames, 2), dtype="float32")  # stéréo
+
+            # Déterminer si un solo est actif
+            solo_active = any(track.get("solo", False) for track in self.tracks)
 
             for track in self.tracks:
                 data = track["data"]
                 volume = track["volume"]
+                mute = track.get("mute", False)
+                solo = track.get("solo", False)
+                pan = track.get("pan", 0.0)
                 length = track["length"]
 
                 start = self.position
                 end = self.position + frames
-
                 if start >= length:
                     continue
 
                 chunk = data[start:min(end, length)]
+                # Ajuster le volume selon mute/solo
+                if mute or (solo_active and not solo):
+                    chunk *= 0.0
+                else:
+                    chunk *= volume
 
-                # Sécurité supplémentaire (si jamais un fichier stéréo passe)
-                if chunk.ndim == 2:
-                    chunk = chunk.mean(axis=1)
+                # Appliquer pan
+                left = np.sqrt(0.5 * (1 - pan)) * chunk
+                right = np.sqrt(0.5 * (1 + pan)) * chunk
 
-                mix[:len(chunk)] += chunk * volume
+                mix[:len(chunk), 0] += left
+                mix[:len(chunk), 1] += right
 
-            # Sortie stéréo (copie du mix mono vers L et R)
-            outdata[:, 0] = mix
-            if outdata.shape[1] > 1:
-                outdata[:, 1] = mix
-
+            outdata[:] = mix
             self.position += frames
 
         except Exception as e:
             print("Erreur lecture :", e)
             outdata[:] = 0
 
+    # ===== PLAY / STOP =====
     def play(self):
         if not self.tracks:
             print("Aucune piste chargée.")
             return
 
-        # Reset lecture depuis le début
         self.position = 0
-
         if self.stream is not None:
             self.stop()
 
@@ -91,7 +100,6 @@ class AudioEngine:
             callback=self._callback,
             latency="low"
         )
-
         self.stream.start()
         print("Lecture en cours...")
 
