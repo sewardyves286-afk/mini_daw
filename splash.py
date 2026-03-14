@@ -1,38 +1,69 @@
-import ctypes
-import tkinter as tk
-from gui import MiniDAWApp
 
-# ===== FIX ICON TASKBAR WINDOWS =====
-myappid = "mini_daw.app.v1"
-ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+import sys
+from PyQt6.QtWidgets import QApplication, QWidget
+from PyQt6.QtGui import QPainter, QPainterPath, QPixmap, QPen
+from PyQt6.QtCore import Qt, QPropertyAnimation, pyqtProperty, QTimer
 
 
-class SplashScreen:
-    def __init__(self, root):
-        self.root = root
-        self.root.overrideredirect(True)
-        self.root.configure(bg="#0f0f0f")
+class SplashScreen(QWidget):
 
-        # Centrer la fenêtre
-        width = 400
-        height = 400
-        x = (root.winfo_screenwidth() // 2) - (width // 2)
-        y = (root.winfo_screenheight() // 2) - (height // 2)
-        self.root.geometry(f"{width}x{height}+{x}+{y}")
+    def __init__(self):
+        super().__init__()
 
-        # Logo
-        self.logo = tk.PhotoImage(file="assets/logo.png")
-        label = tk.Label(root, image=self.logo, bg="#0f0f0f")
-        label.pack(expand=True)
+        self.pixmap = QPixmap("assets/logo.png")
+
+        self.opacity = 0.0
+
+        self.resize(400, 400)
+
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
+
+        # animation fade-in
+        self.anim = QPropertyAnimation (self, b"windowOpacity")
+        self.anim.setDuration(2000)
+        self.anim.setStartValue(0)
+        self.anim.setEndValue(1)
+        self.anim.start()
+
+        # durée affichage
+        QTimer.singleShot(4000, self.close)
+
+    def paintEvent(self, event):
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        size = min(self.width(), self.height())
+        margin = 10
+
+        path = QPainterPath()
+        path.addEllipse(margin, margin, size - margin*2, size - margin*2)
+
+        painter.setClipPath(path)
+
+        scaled = self.pixmap.scaled(
+            self.size(),
+            Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+            Qt.TransformationMode.SmoothTransformation
+        )
+
+        painter.drawPixmap(self.rect(), scaled)
+
+        painter.setClipping(False)
+
+        pen = QPen(Qt.GlobalColor.white)
+        pen.setWidth(2)
+
+        painter.setPen(pen)
+        painter.drawEllipse(margin, margin, size - margin*2, size - margin*2)
 
 
 if __name__ == "__main__":
-    # Splash
-    splash_root = tk.Tk()
-    splash = SplashScreen(splash_root)
-    splash_root.after(3000, splash_root.destroy)
-    splash_root.mainloop()
 
-    # Lancement vrai Mini_DAW
-    app = MiniDAWApp()
-    app.run()
+    app = QApplication(sys.argv)
+
+    splash = SplashScreen()
+    splash.show()
+
+    sys.exit(app.exec())

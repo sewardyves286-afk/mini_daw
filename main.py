@@ -6,20 +6,23 @@ import sys
 import os
 import subprocess
 
+
+# --- Fonctions utilitaires ---
 def resource_path(relative_path):
-    """Compatibilité PyInstaller et DEV"""
     try:
         base_path = sys._MEIPASS
     except Exception:
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
 
+
 def check_assets():
-    required_files = ["assets/logo.png", "assets/logo.ico"]
-    missing = [f for f in required_files if not os.path.exists(resource_path(f))]
+    required = ["assets/logo.png", "assets/logo.ico"]
+    missing = [f for f in required if not os.path.exists(resource_path(f))]
     if missing:
         messagebox.showerror("Erreur", f"Fichiers manquants : {', '.join(missing)}")
         sys.exit(1)
+
 
 def check_ffmpeg():
     try:
@@ -28,19 +31,20 @@ def check_ffmpeg():
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL
         )
-    except FileNotFoundError:
-        messagebox.showwarning(
-            "FFmpeg manquant",
-            "FFmpeg n'est pas installé. Les fichiers mp3/flac ne pourront pas être lus."
-        )
+    except Exception:
+        print("FFmpeg non détecté")
+
 
 # --- Fix Windows Taskbar Icon ---
 myappid = "mini_daw.app.v1"
 ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
 
+
+# --- SplashScreen ---
 class SplashScreen:
-    def __init__(self, root):
+    def __init__(self, root, on_done):
         self.root = root
+        self.on_done = on_done
         self.root.overrideredirect(True)
         self.root.configure(bg="#0f0f0f")
 
@@ -49,61 +53,114 @@ class SplashScreen:
         y = (self.root.winfo_screenheight() - h) // 2
         self.root.geometry(f"{w}x{h}+{x}+{y}")
 
-        frame = tk.Frame(root, bg="#0f0f0f")
-        frame.pack(expand=True, fill="both")
+        self.canvas = tk.Canvas(root, width=w, height=h,
+                                bg="#0f0f0f", highlightthickness=0)
+        self.canvas.pack()
 
-        # ✅ Utilisation PNG (PAS ICO)
         logo_path = resource_path("assets/logo.png")
-        try:
-            self.logo = tk.PhotoImage(file=logo_path)
-            tk.Label(frame, image=self.logo, bg="#0f0f0f").pack(pady=30)
-        except Exception as e:
-            print("Erreur chargement logo:", e)
+        self.logo = tk.PhotoImage(file=logo_path).subsample(4, 4)
 
-        tk.Label(
-            frame,
+        self.cx = w // 2
+        self.cy = h // 2 - 20
+        r = 90
+
+        points = [
+            self.cx - r * 0.5, self.cy - r,
+            self.cx + r * 0.5, self.cy - r,
+            self.cx + r,       self.cy,
+            self.cx + r * 0.5, self.cy + r,
+            self.cx - r * 0.5, self.cy + r,
+            self.cx - r,       self.cy
+        ]
+        self.canvas.create_polygon(points, outline="#4CAF50", width=3, fill="")
+        self.canvas.create_image(self.cx, self.cy, image=self.logo)
+        self.canvas.create_text(
+            self.cx, self.cy + 110,
             text="mini_daw",
-            fg="white",
-            bg="#0f0f0f",
+            fill="white",
             font=("Segoe UI", 18, "bold")
-        ).pack()
-
-        tk.Label(
-            frame,
-            text="Digital Audio Workstation",
-            fg="#aaaaaa",
-            bg="#0f0f0f",
-            font=("Segoe UI", 9)
-        ).pack(pady=5)
-
-        self.progress = tk.Canvas(
-            frame,
-            width=200,
-            height=6,
-            bg="#1a1a1a",
-            highlightthickness=0
         )
-        self.progress.pack(pady=25)
 
-        self.bar = self.progress.create_rectangle(
-            0, 0, 0, 6,
-            fill="#4CAF50",
-            width=0
+        self.progress = self.canvas.create_rectangle(
+            self.cx - 100, self.cy + 140,
+            self.cx - 100, self.cy + 150,
+            fill="#4CAF50", outline=""
         )
 
         self.load_progress(0)
 
     def load_progress(self, value):
         if value <= 200:
-            self.progress.coords(self.bar, 0, 0, value, 6)
-            self.root.after(15, lambda: self.load_progress(value + 4))
+            self.canvas.coords(
+                self.progress,
+                self.cx - 100,
+                self.cy + 140,
+                self.cx - 100 + value,
+                self.cy + 150
+            )
+            self.root.after(25, lambda: self.load_progress(value + 4))
         else:
             self.root.destroy()
-            MiniDAWApp().run()
+            self.on_done()
 
+
+# --- Gestionnaire d'exceptions global ---
+def _handle_exception(exc_type, exc_value, exc_tb):
+    """Capture toutes les exceptions non gérées — évite la fermeture silencieuse."""
+    import traceback
+    try:
+        err = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+    except Exception:
+        err = f"{exc_type.__name__}: {exc_value}"
+    print(f"[mini_daw] ERREUR NON GÉRÉE:\n{err}")
+    try:
+        messagebox.showerror(
+            "mini_daw — Erreur",
+            f"Une erreur inattendue s'est produite :\n\n"
+            f"{exc_type.__name__}: {exc_value}\n\n"
+            f"L'application continue de fonctionner.\n"
+            f"Consulte le terminal pour les détails.")
+    except Exception:
+        pass
+
+sys.excepthook = _handle_exception
+
+
+# --- MAIN ---
 if __name__ == "__main__":
-    splash_root = tk.Tk()
     check_assets()
     check_ffmpeg()
-    SplashScreen(splash_root)
+
+    def launch_main_app():
+        root = tk.Tk()
+        ico  = resource_path("assets/logo.ico")
+        root.iconbitmap(ico)
+
+        # Propager icone mini_daw a toutes les fenetres Toplevel
+        _orig = tk.Toplevel.__init__
+        def _patched(self_win, master=None, **kw):
+            _orig(self_win, master, **kw)
+            try:
+                self_win.iconbitmap(ico)
+            except Exception:
+                pass
+        tk.Toplevel.__init__ = _patched
+
+        # Gestionnaire d'exceptions dans les callbacks tkinter
+        def _tk_exception(exc, val, tb, *args):
+            _handle_exception(type(exc), exc, tb)
+        root.report_callback_exception = _tk_exception
+
+        try:
+            app = MiniDAWApp(root)
+            root.mainloop()
+        except Exception as e:
+            import traceback
+            print(f"[mini_daw] Crash fatal : {e}")
+            traceback.print_exc()
+            messagebox.showerror("mini_daw — Crash",
+                f"Erreur fatale : {e}\nRelance l'application.")
+
+    splash_root = tk.Tk()
+    SplashScreen(splash_root, on_done=launch_main_app)
     splash_root.mainloop()

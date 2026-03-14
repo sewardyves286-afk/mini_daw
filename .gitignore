@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+.Python
+build/
+dist/
+*.spec
+
+# Environnements virtuels
+.venv/
+venv/
+env/
+ENV/
+
+# Fichiers temporaires audio
+*_daw_tmp.wav
+
+# Fichiers de build PyInstaller
+build/
+dist/
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Fichiers de projet générés (garder le dossier mais pas le contenu)
+samples/recordings/*
+samples/edited/*
+!samples/recordings/.gitkeep
+!samples/edited/.gitkeep
+
+# Projets sauvegardés (optionnel — retire ces lignes si tu veux les versionner)
+# projects/*
+# !projects/.gitkeep
