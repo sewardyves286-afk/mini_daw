@@ -72,8 +72,8 @@ class Recorder:
     # ------------------------------------------------
     # ENREGISTREMENT
     # ------------------------------------------------
-    def start(self, device_index=None, channels=CHANNELS):
-        """Démarre l'enregistrement."""
+    def start(self, device_index=None, channels=CHANNELS, gain=1.0):
+        """Démarre l'enregistrement. gain : 0.0-2.0"""
         if not SD_OK:
             print("[Recorder] sounddevice non disponible")
             return False
@@ -85,6 +85,8 @@ class Recorder:
         self._frames = []
         self._stop_event.clear()
         self.is_recording = True
+        self._gain = float(gain)
+        self._current_level = 0.0  # pour VU meter thread-safe
 
         self._thread = threading.Thread(
             target=self._record_loop,
@@ -92,7 +94,7 @@ class Recorder:
             daemon=True
         )
         self._thread.start()
-        print(f"[Recorder] ● Enregistrement démarré (device={device_index})")
+        print(f"[Recorder] ● Démarré (device={device_index}, gain={gain:.1f})")
         return True
 
     def _record_loop(self, device_index, channels):
@@ -109,7 +111,13 @@ class Recorder:
                     data, overflowed = stream.read(1024)
                     if overflowed:
                         print("[Recorder] Overflow détecté")
-                    self._frames.append(data.copy())
+                    # Appliquer le gain
+                    gained = data * self._gain
+                    gained = np.clip(gained, -1.0, 1.0)
+                    self._frames.append(gained.copy())
+                    # Mettre à jour le niveau RMS (thread-safe)
+                    self._current_level = float(
+                        np.sqrt(np.mean(gained ** 2)))
         except Exception as e:
             print(f"[Recorder] Erreur stream : {e}")
         finally:
@@ -155,12 +163,9 @@ class Recorder:
     # MONITORING (écoute en temps réel)
     # ------------------------------------------------
     def get_level(self):
-        """Retourne le niveau RMS du dernier bloc (pour vumètre)."""
-        if not self._frames:
-            return 0.0
-        last = self._frames[-1]
-        rms = float(np.sqrt(np.mean(last ** 2)))
-        return min(1.0, rms * 10)
+        """Retourne le niveau RMS (thread-safe, mis à jour en continu)."""
+        level = getattr(self, '_current_level', 0.0)
+        return min(1.0, level * 8)
 
 
 # ================================================
@@ -182,15 +187,29 @@ class RecorderWindow:
         self.win = tk.Toplevel(parent)
         self.win.title("● Enregistrement")
         self.win.configure(bg="#0f0f0f")
-        self.win.resizable(False, False)
-        self.win.geometry("340x280")
-        self.win.grab_set()  # Modale
+        self.win.resizable(True, True)
+        self.win.minsize(420, 300)
+        self.win.geometry("460x340")
+        self.win.protocol("WM_DELETE_WINDOW", self._close)
+        self.win.focus_set()
+        self.win.lift()
+        # Icone mini_daw
+        try:
+            import sys as _sys
+            _base = (os.path.dirname(_sys.executable)
+                     if getattr(_sys, "frozen", False)
+                     else os.path.dirname(os.path.abspath(__file__)))
+            _ico = os.path.join(_base, "assets", "logo.ico")
+            if os.path.exists(_ico):
+                self.win.iconbitmap(_ico)
+        except Exception:
+            pass
 
         self._build_ui()
         self._refresh_devices()
 
     def _build_ui(self):
-        pad = {"padx": 12, "pady": 6}
+        pad = {"padx": 12, "pady": 5}
 
         # Titre
         tk.Label(self.win, text="● ENREGISTREMENT",
@@ -200,87 +219,101 @@ class RecorderWindow:
         # Sélection périphérique
         dev_frame = tk.Frame(self.win, bg="#0f0f0f")
         dev_frame.pack(fill="x", **pad)
-
         tk.Label(dev_frame, text="Entrée :",
                  bg="#0f0f0f", fg="#888888",
                  font=("Segoe UI", 9)).pack(side="left")
-
         self.device_var = tk.StringVar()
         self.device_combo = ttk.Combobox(
             dev_frame, textvariable=self.device_var,
-            state="readonly", width=28,
-            font=("Segoe UI", 8)
-        )
+            state="readonly", width=26, font=("Segoe UI", 8))
         self.device_combo.pack(side="left", padx=6)
 
         # Nom du fichier
         name_frame = tk.Frame(self.win, bg="#0f0f0f")
         name_frame.pack(fill="x", **pad)
-
         tk.Label(name_frame, text="Nom :",
                  bg="#0f0f0f", fg="#888888",
                  font=("Segoe UI", 9)).pack(side="left")
-
         self.name_var = tk.StringVar(value="")
         tk.Entry(name_frame, textvariable=self.name_var,
                  bg="#1e1e1e", fg="white", insertbackground="white",
                  relief="flat", font=("Segoe UI", 9),
-                 width=26).pack(side="left", padx=6)
+                 width=24).pack(side="left", padx=6)
+
+        # Gain (volume d'entrée micro)
+        gain_frame = tk.Frame(self.win, bg="#0f0f0f")
+        gain_frame.pack(fill="x", padx=12, pady=3)
+        tk.Label(gain_frame, text="Gain :",
+                 bg="#0f0f0f", fg="#888888",
+                 font=("Segoe UI", 9)).pack(side="left")
+        self.gain_var = tk.DoubleVar(value=1.0)
+        gain_slider = tk.Scale(
+            gain_frame, variable=self.gain_var,
+            from_=0.1, to=2.0, resolution=0.05,
+            orient="horizontal", length=160,
+            bg="#0f0f0f", fg="white",
+            troughcolor="#333333",
+            activebackground="#4CAF50",
+            highlightthickness=0, showvalue=False)
+        gain_slider.pack(side="left", padx=6)
+        self.gain_label = tk.Label(
+            gain_frame, text="1.0x",
+            bg="#0f0f0f", fg="#4CAF50",
+            font=("Segoe UI", 8), width=4)
+        self.gain_label.pack(side="left")
+        self.gain_var.trace_add("write", self._on_gain_change)
 
         # VU-mètre
         vu_frame = tk.Frame(self.win, bg="#0f0f0f")
-        vu_frame.pack(fill="x", padx=12, pady=4)
-
+        vu_frame.pack(fill="x", padx=12, pady=3)
         tk.Label(vu_frame, text="Niveau :",
                  bg="#0f0f0f", fg="#888888",
                  font=("Segoe UI", 9)).pack(side="left")
-
-        self.vu_canvas = tk.Canvas(vu_frame, bg="#1a1a1a",
-                                   width=200, height=14,
-                                   highlightthickness=0)
+        self.vu_canvas = tk.Canvas(
+            vu_frame, bg="#1a1a1a",
+            width=200, height=16, highlightthickness=0)
         self.vu_canvas.pack(side="left", padx=8)
-        self.vu_bar = self.vu_canvas.create_rectangle(
-            0, 0, 0, 14, fill="#4CAF50", outline=""
-        )
+        # Fond segmenté
+        for i in range(20):
+            x = i * 10
+            color = "#1a1a1a"
+            self.vu_canvas.create_rectangle(
+                x+1, 1, x+9, 15, fill=color, outline="", tags=f"seg{i}")
+        self.vu_canvas.create_rectangle(
+            0, 0, 0, 16, fill="#4CAF50", outline="", tags="vu_bar")
 
         # Timer
         self.timer_label = tk.Label(
             self.win, text="00:00",
             bg="#0f0f0f", fg="#cccccc",
-            font=("Consolas", 22, "bold")
-        )
+            font=("Consolas", 20, "bold"))
         self.timer_label.pack(pady=6)
         self._rec_start = None
 
         # Boutons
         btn_frame = tk.Frame(self.win, bg="#0f0f0f")
-        btn_frame.pack(pady=10)
-
+        btn_frame.pack(pady=8)
         self.btn_rec = tk.Button(
             btn_frame, text="● REC",
             font=("Segoe UI", 11, "bold"),
             bg="#c0392b", fg="white",
             activebackground="#e74c3c",
             relief="flat", padx=16, pady=6,
-            command=self._toggle_record
-        )
+            command=self._toggle_record)
         self.btn_rec.pack(side="left", padx=6)
-
         tk.Button(
             btn_frame, text="✕ Fermer",
             font=("Segoe UI", 10),
             bg="#2a2a2a", fg="white",
             activebackground="#555",
             relief="flat", padx=10, pady=6,
-            command=self._close
-        ).pack(side="left", padx=6)
+            command=self._close).pack(side="left", padx=6)
 
         # Statut
         self.status_label = tk.Label(
-            self.win, text="Prêt",
+            self.win, text="Prêt — règle le gain avant d'enregistrer",
             bg="#0f0f0f", fg="#4CAF50",
-            font=("Segoe UI", 8)
-        )
+            font=("Segoe UI", 8))
         self.status_label.pack()
 
     def _refresh_devices(self):
@@ -314,9 +347,14 @@ class RecorderWindow:
         else:
             self._stop_record()
 
+    def _on_gain_change(self, *_):
+        v = self.gain_var.get()
+        self.gain_label.config(text=f"{v:.1f}x")
+
     def _start_record(self):
         device = self._get_selected_device()
-        ok = self.recorder.start(device_index=device)
+        gain   = self.gain_var.get()
+        ok = self.recorder.start(device_index=device, gain=gain)
         if ok:
             self._rec_start = time.time()
             self.btn_rec.config(text="⏹ STOP", bg="#e74c3c")
@@ -341,11 +379,13 @@ class RecorderWindow:
 
         if filepath and self.on_recorded:
             duration = self._get_duration(filepath)
+            # Fermer la fenêtre avant d appeler le callback
+            # pour que la timeline soit visible immédiatement
+            try:
+                self.win.destroy()
+            except Exception:
+                pass
             self.on_recorded(filepath, duration)
-            self.status_label.config(
-                text=f"✔ Sauvegardé : {os.path.basename(filepath)}",
-                fg="#4CAF50"
-            )
 
     def _get_duration(self, filepath):
         """Calcule la durée d'un fichier WAV."""
@@ -356,15 +396,23 @@ class RecorderWindow:
             return 4.0
 
     def _update_vu(self):
-        """Met à jour le vumètre en temps réel."""
+        """Met à jour le vumètre segmenté en temps réel."""
         if not self.recorder.is_recording:
             return
-        level = self.recorder.get_level()
-        width = int(200 * level)
-        color = "#4CAF50" if level < 0.7 else "#FFC107" if level < 0.9 else "#f44336"
-        self.vu_canvas.coords(self.vu_bar, 0, 0, width, 14)
-        self.vu_canvas.itemconfig(self.vu_bar, fill=color)
-        self._vu_job = self.win.after(50, self._update_vu)
+        level   = self.recorder.get_level()
+        n_segs  = int(level * 20)
+        for i in range(20):
+            if i < n_segs:
+                if i < 14:
+                    color = "#4CAF50"
+                elif i < 18:
+                    color = "#FFC107"
+                else:
+                    color = "#f44336"
+            else:
+                color = "#222222"
+            self.vu_canvas.itemconfig(f"seg{i}", fill=color)
+        self._vu_job = self.win.after(40, self._update_vu)
 
     def _update_timer(self):
         """Affiche le temps d'enregistrement."""

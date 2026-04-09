@@ -94,7 +94,9 @@ class FileExplorerWindow:
         except Exception:
             pass
 
-        self.win.grab_set()
+        self.win.protocol("WM_DELETE_WINDOW", self._cancel)
+        self.win.focus_set()
+        self.win.lift()
         self._build_ui()
         self._navigate(self._current)
 
@@ -567,6 +569,10 @@ class FileExplorerWindow:
         self._stop_preview.set()
         try:
             sd.stop()
+        except Exception:
+            pass
+        try:
+            self.win.grab_release()
         except Exception:
             pass
         self.win.destroy()

@@ -1,233 +1,184 @@
 # 🎛 mini_daw
 
-> A lightweight Digital Audio Workstation (DAW) built from scratch in Python.
+**mini_daw** est une application de création musicale desktop, inspirée de FL Studio et Ableton Live, construite entièrement en Python + tkinter.
 
-![Status](https://img.shields.io/badge/status-work%20in%20progress-yellow)
-![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-![Platform](https://img.shields.io/badge/platform-Windows-lightgrey)
-![License](https://img.shields.io/badge/license-MIT-green)
-
----
-
-## 📌 Project Goal
-
-mini_daw is inspired by modern DAWs like **Ableton Live** and **FL Studio**, but focuses on understanding and implementing core audio fundamentals step by step — entirely in Python, with no external DAW framework.
-
-The goal is to progressively build a modular audio workstation from scratch, including:
-
-- Multi-track timeline with drag, resize and snap
-- Real-time audio playback and mixing
-- Voice and instrument recording
-- Audio clip editing with effects
-- BPM-synchronized grid and metronome
-- Import from disk, web, or internal library
-- Export final mix to WAV
+![Python](https://img.shields.io/badge/Python-3.12-blue)
+![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey)
+![License](https://img.shields.io/badge/License-MIT-green)
 
 ---
 
-## 🖥 Screenshots
+## ✨ Fonctionnalités
 
-> _Timeline view_
-> ![Timeline](assets/screenshots/timeline.png)
+### Timeline
+- Grille infinie avec mesures synchronisées au BPM
+- Zoom horizontal (Ctrl+molette ou boutons −/+) de ¼x à 6x
+- Snap musical automatique sur les temps (beat) selon le BPM
+- Playhead déplaçable par clic ou glisser n'importe où sur la grille
+- Auto-scroll : la grille suit le playhead pendant la lecture
+- Sélection multiple par rectangle (lasso) + déplacement en bloc
 
-> _Clip Editor with effects_
-> ![Clip Editor](assets/screenshots/clip_editor.png)
+### Outils de la toolbar
+| Icône | Outil | Action |
+|-------|-------|--------|
+| ↖ | Sélection | Déplacer, redimensionner les clips |
+| ✂ | Split | Clic sur un clip = couper en deux |
+| M | Mute | Clic sur un clip = muter/démuter |
 
-> _File Explorer (built-in)_
-> ![File Explorer](assets/screenshots/file_explorer.png)
+### Clips audio
+- Import drag-and-drop ou via le menu File → Import
+- Couleurs personnalisables (12 couleurs, clic droit → 🎨 Couleur)
+- Couleurs persistées à la réouverture du projet
+- Split direct dans la timeline (Ctrl+clic ou outil ✂)
+- Resize horizontal (bords gauche/droit) avec snap musical
+- Duplication (Ctrl+D), suppression (Suppr)
+- Mute visuel avec l'outil M
 
----
+### Éditeur audio (clip editor)
+- Waveform scrollable et zoomable (molette)
+- Règle des temps infinie (ms → secondes)
+- Playhead positionnable par clic sur la waveform
+- Sélection de zone (glisser) pour découper
+- Effets DSP natifs (sans scipy) :
+  - 🔇 Noise Reduction
+  - 🏛 Reverb
+  - 🔁 Echo / Delay
+  - 🎵 Pitch Shift
+- Transport interne (▶ ⏹ ●) avec timer
+- Envoi direct sur la timeline après édition
 
-## ✅ Features
+### Enregistrement
+- Enregistrement micro/ligne via sounddevice
+- VU-mètre temps réel (20 segments)
+- Contrôle du gain (0.1x → 2.0x)
+- Envoi automatique sur la timeline après stop
+- Sauvegarde dans `samples/recordings/`
 
-### 🎚 Transport & Timeline
-- Play / Stop / Record buttons with rounded UI
-- BPM control with mouse wheel support
-- Time signature selector (2, 3, 4, 6, 7, 8)
-- Playhead with click-to-seek on ruler
-- Auto-stop at end of last clip
-- Grid redraws dynamically on BPM change
-- Ruler displays bar numbers instead of seconds
+### Projets
+- Format `.mdaw` (JSON) — chemins absolus, zéro copie
+- Save (Ctrl+S) / Save As / New Project / Open
+- Templates intégrés : Blank, Minimal, Trap, Lofi, Podcast
+- Recherche automatique des fichiers manquants à l'ouverture
+- Dialog de sauvegarde à la fermeture
+- Auto-save toutes les 2 minutes
 
-### 🎵 Metronome
-- Sample-accurate metronome via sounddevice callback stream
-- Accented first beat per bar
-- Visual beat indicator (flashing dot)
-- Works standalone or synced to Play
-- BPM and time signature update in real time
+### Transport
+- BPM ajustable (40–300) par boutons +/− ou molette
+- Métronome audio précis (sample-accurate via sounddevice)
+- Signature rythmique variable (2/4, 3/4, 4/4, 6/4, 7/4, 8/4)
+- Indicateur de beat clignotant
 
-### 🎞 Clips
-- Import audio: WAV, MP3, FLAC, OGG, AIFF, AAC, WMA
-- Rounded clip blocks, 50% height, centered in track
-- Drag clips horizontally and vertically (snap to grid)
-- Resize clips: left/right edges → adjust duration (↔)
-- Resize clips: top/bottom edges → adjust height (↕)
-- Right-click context menu: Edit, Duplicate, Delete
-- Clips turn green after editing
-
-### 🎛 Tracks (panel left)
-- 5 tracks with Vol and Pan sliders
-- Rounded custom canvas sliders
-- Vol/Pan updates clips in real time during playback
-- Pan uses equal-power stereo law
-
-### 🎤 Recording
-- Microphone input via sounddevice InputStream
-- Real-time VU meter
-- Device selector
-- Recordings saved to `samples/recordings/`
-- Recorded clip placed at playhead position on timeline
-
-### 🎛 Clip Editor
-- Open via right-click → Editor
-- Waveform display with click-drag selection
-- Cut: keep selection or remove selection
-- Effects (toggle per clip):
-  - 🔇 **Noise Reduction** — spectral subtraction
-  - 🏛 **Reverb** — convolution with synthetic IR (room size, damping, mix)
-  - 🔁 **Echo / Delay** — delay ms, feedback, mix
-  - 🎵 **Pitch Shift** — ±12 semitones via resampling
-- Preview before applying
-- Saves edited file to `samples/edited/`
-- Updates clip on timeline after apply
-
-### 📂 Import
-- **Built-in File Explorer** — navigate full disk, favorites, drives
-  - Back / Forward / Up navigation
-  - Filter: all files or audio only
-  - Mini waveform preview + audio info
-  - ▶ Listen before importing
-- **Import Web** — paste any direct URL (.wav, .mp3...) and download
-  - Sources: Freesound, Looperman, Sampleswap, Zapsplat
-  - Progress bar + file saved to `samples/`
-- **My Samples** — browse internal library
-  - Tabs: Downloads / Recordings / Edited
-  - Import with one click
-
-### ⬇ Export
-- Full mixdown to stereo WAV (44100 Hz)
-- Respects clip positions, volumes, pan
-- Real audio duration (not clip visual width)
-- Progress bar, custom filename and folder
-
-### 💾 Projects
-- Save / Load `.mdaw` project files (JSON)
-- New project dialog with name field
-- Reloads all clips from saved audio file paths
-- Warning if audio files are missing on load
-- Undo / Redo (Ctrl+Z / Ctrl+Y)
+### Interface
+- Thème sombre complet (#0f0f0f)
+- Explorateur de fichiers intégré (View → Samples/Recordings/Projects)
+- Navigation avec ← ↑ et chemin éditable
+- Pattern Editor (séquenceur de drums)
+- Plugin Picker (Phase 2)
+- Associations Windows : double-clic sur `.mdaw` ouvre mini_daw
 
 ---
 
-## 🗂 Project Structure
+## 🗂 Structure du projet
 
 ```
 mini_daw/
-│
-├── main.py              # Entry point — splash screen, global error handler
-├── gui.py               # Main window — timeline, transport, tracks, clips
-├── engine.py            # Audio engine — mixing, playback via sounddevice
-├── recorder.py          # Recording window — mic input, VU meter
-├── metronome.py         # Sample-accurate metronome (sounddevice stream)
-├── clip_editor.py       # Clip editor — waveform, cut, effects (NR/reverb/delay/pitch)
-├── exporter.py          # Mixdown export to WAV
-├── file_explorer.py     # Built-in file browser (replaces tkinter filedialog)
-├── web_importer.py      # Import audio from URL
-├── project_manager.py   # Save/load .mdaw project files (JSON)
-│
+├── main.py                 # Point d'entrée — gère sys.argv (double-clic .mdaw)
+├── gui.py                  # Interface principale — timeline, transport, menus
+├── engine.py               # Moteur audio — lecture des clips
+├── clip_editor.py          # Éditeur audio — waveform, effets DSP, découpe
+├── recorder.py             # Enregistrement micro/ligne
+├── project_manager.py      # Sauvegarde/chargement .mdaw
+├── file_explorer.py        # Explorateur de fichiers intégré
+├── metronome.py            # Métronome sample-accurate
+├── pattern_editor.py       # Séquenceur de drums
+├── build_exe.bat           # Compilation PyInstaller → mini_daw.exe
+├── create_association.py   # Association Windows .mdaw → mini_daw.exe
 ├── assets/
 │   ├── logo.ico
 │   └── logo.png
-│
 ├── samples/
-│   ├── recordings/      # Saved voice recordings
-│   └── edited/          # Clips processed in the editor
-│
-└── projects/            # Saved .mdaw project files
+│   ├── recordings/         # Enregistrements micro
+│   └── edited/             # Clips édités
+└── projects/               # Projets sauvegardés
+    └── nom_projet/
+        └── nom_projet.mdaw
 ```
 
 ---
 
-## ⚙ Installation
+## 🚀 Installation et lancement
 
-### Requirements
+### Prérequis
+- Python 3.12
+- Windows 10/11
 
-- Python 3.10+
-- Windows (tested on Windows 10/11)
-
-### Dependencies
-
+### Dépendances
 ```bash
-pip install sounddevice soundfile numpy scipy pydub requests
+pip install sounddevice soundfile numpy pydub
+pip install pyinstaller   # pour la compilation exe
 ```
 
-| Package | Usage |
-|---|---|
-| `sounddevice` | Audio playback, recording, metronome stream |
-| `soundfile` | Read/write WAV, FLAC, OGG files |
-| `numpy` | Audio buffer processing, effects DSP |
-| `scipy` | Reverb (FFT convolution), noise reduction (STFT) |
-| `pydub` | MP3 decoding (requires FFmpeg) |
-| `requests` | Web audio download |
-
-### FFmpeg (for MP3 support)
-
-Download FFmpeg and place the binary in `mini_daw/ffmpeg-*/bin/` or add it to your system PATH.
-
----
-
-## 🚀 Run
-
+### Lancer en développement
 ```bash
-cd mini_daw
+cd C:\Users\sewar_000\Desktop\mini_daw
 python main.py
 ```
 
----
+### Compiler l'exe
+```powershell
+.\build_exe.bat
+```
 
-## 🎮 Quick Start
-
-1. **Import a sample** — `Fichier → Importer un fichier audio` or `📂 Import` button
-2. **Place on timeline** — clip appears at playhead position
-3. **Press ▶** — hear your mix
-4. **Record a voice** — press `●` REC, select microphone, record
-5. **Edit a clip** — right-click on clip → `🎛 Éditeur`
-6. **Export** — `Fichier → Exporter WAV`
-7. **Save project** — `Fichier → Sauvegarder` (`.mdaw` file)
-
-### Keyboard Shortcuts
-
-| Shortcut | Action |
-|---|---|
-| `Ctrl+Z` | Undo |
-| `Ctrl+Y` | Redo |
-| `Ctrl+S` | Save project |
-| `Ctrl+N` | New project |
-| `Ctrl+D` | Duplicate clip |
-| `Delete` | Delete selected clip |
+### Associer les fichiers .mdaw
+```bash
+python create_association.py
+```
+Après ça, double-clic sur n'importe quel `.mdaw` dans l'Explorateur Windows ouvre mini_daw directement.
 
 ---
 
-## 🗺 Roadmap
+## ⌨️ Raccourcis clavier
 
-- [ ] Waveform drawn inside each clip on the timeline
-- [ ] Loop region (A/B loop)
-- [ ] Mute / Solo buttons per track (connected to engine)
-- [ ] MIDI input support
-- [ ] Plugin system (VST-like effects per track)
-- [ ] Real-time pitch correction (autotune)
-- [ ] Export to MP3
-- [ ] Dark / Light theme toggle
-- [ ] Linux and macOS support
-
----
-
-## 👤 Author
-
-Built by **sewar** — learning audio programming one module at a time.
+| Raccourci | Action |
+|-----------|--------|
+| `Ctrl+S` | Sauvegarder |
+| `Ctrl+Z` | Annuler |
+| `Ctrl+Y` | Rétablir |
+| `Ctrl+N` | Nouveau projet |
+| `Ctrl+O` | Ouvrir un projet |
+| `Ctrl+D` | Dupliquer le clip sélectionné |
+| `Ctrl+A` | Sélectionner tout |
+| `Ctrl+clic` | Split du clip |
+| `Ctrl+molette` | Zoom horizontal |
+| `Suppr` | Supprimer le clip sélectionné |
 
 ---
 
-## 📄 License
+## 🛠 Stack technique
 
-MIT License — free to use, modify and distribute.
+| Composant | Technologie |
+|-----------|-------------|
+| Interface | Python tkinter (Canvas natif) |
+| Audio playback | sounddevice + numpy |
+| Audio I/O | soundfile |
+| Format export MP3 | pydub |
+| Compilation | PyInstaller --onefile --windowed |
+| Format projet | JSON (.mdaw) |
+| DSP | numpy pur (STFT, convolution, pitch shift) |
+
+---
+
+## 📋 Roadmap
+
+- [ ] VST2/VST3 support (Phase 2)
+- [ ] Channel Rack (instruments)
+- [ ] Mixer avec effets par piste
+- [ ] Automation des paramètres
+- [ ] Time-stretch selon BPM (librosa/rubberband)
+- [ ] Export MP4 vidéo
+
+---
+
+## 👤 Auteur
+
+Projet personnel — développé avec Python + Claude (Anthropic)

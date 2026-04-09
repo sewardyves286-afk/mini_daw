@@ -35,11 +35,9 @@ dist/
 Thumbs.db
 desktop.ini
 
-# Fichiers de projet générés (garder le dossier mais pas le contenu)
-samples/recordings/*
-samples/edited/*
-!samples/recordings/.gitkeep
-!samples/edited/.gitkeep
+# Garder les dossiers samples (les fichiers audio ne sont PAS ignorés)
+# Seuls les fichiers temporaires sont ignorés
+*_daw_tmp.wav
 
 # Projets sauvegardés (optionnel — retire ces lignes si tu veux les versionner)
 # projects/*

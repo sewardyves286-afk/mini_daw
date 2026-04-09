@@ -13,11 +13,43 @@ from tkinter import ttk, messagebox
 import numpy as np
 import soundfile as sf
 
-try:
-    from scipy import signal as scipy_signal
-    SCIPY_OK = True
-except ImportError:
-    SCIPY_OK = False
+# scipy remplacé par numpy pur (compatibilité PyInstaller)
+SCIPY_OK = False  # numpy seulement
+
+
+def _stft_numpy(x, n_fft=1024, hop=256):
+    """STFT numpy pur."""
+    frames = (len(x) - n_fft) // hop + 1
+    Z = np.zeros((n_fft // 2 + 1, max(1, frames)), dtype=np.complex64)
+    win = np.hanning(n_fft).astype(np.float32)
+    for i in range(max(1, frames)):
+        seg = x[i*hop: i*hop + n_fft]
+        if len(seg) < n_fft:
+            seg = np.pad(seg, (0, n_fft - len(seg)))
+        Z[:, i] = np.fft.rfft(seg * win)
+    return Z
+
+
+def _istft_numpy(Z, n_fft=1024, hop=256, length=None):
+    """ISTFT numpy pur (OLA)."""
+    frames = Z.shape[1]
+    out_len = (frames - 1) * hop + n_fft
+    out = np.zeros(out_len, dtype=np.float32)
+    win = np.hanning(n_fft).astype(np.float32)
+    for i in range(frames):
+        seg = np.fft.irfft(Z[:, i], n=n_fft).real * win
+        out[i*hop: i*hop + n_fft] += seg
+    if length:
+        out = out[:length]
+    return out
+
+
+def _fftconvolve_numpy(a, b):
+    """Convolution via FFT numpy pur."""
+    n = len(a) + len(b) - 1
+    fa = np.fft.rfft(a, n=n)
+    fb = np.fft.rfft(b, n=n)
+    return np.fft.irfft(fa * fb, n=n).real.astype(np.float32)
 
 try:
     import sounddevice as sd
@@ -42,14 +74,13 @@ def load_mono(filepath):
 
 
 def apply_reverb(data, sr, room=0.5, damping=0.5, wet=0.4):
-    if not SCIPY_OK:
-        return data
+    """Reverb via convolution numpy pur."""
     ir_len = int(sr * max(0.01, room) * 2)
     t      = np.linspace(0, 1, ir_len)
     decay  = np.exp(-damping * 6 * t)
     ir     = (np.random.randn(ir_len) * decay).astype("float32")
     ir[0]  = 1.0
-    rev    = scipy_signal.fftconvolve(data, ir, mode="full")[:len(data)]
+    rev    = _fftconvolve_numpy(data, ir)[:len(data)]
     rev    = rev / (np.max(np.abs(rev)) + 1e-9)
     return np.clip((1 - wet) * data + wet * rev.astype("float32"), -1, 1)
 
@@ -80,18 +111,18 @@ def apply_pitch(data, sr, semitones=0):
 
 
 def apply_noise_reduction(data, sr, strength=0.8):
-    if not SCIPY_OK:
-        return data
+    """Noise reduction via STFT numpy pur."""
     noise_len = min(int(sr * 0.2), len(data) // 4)
-    noise_ref = data[:noise_len]
+    noise_ref = data[:max(noise_len, 1)]
     n_fft = 1024
     hop   = n_fft // 4
-    _, _, Zxx    = scipy_signal.stft(data,      fs=sr, nperseg=n_fft, noverlap=n_fft-hop)
-    _, _, Znoise = scipy_signal.stft(noise_ref, fs=sr, nperseg=n_fft, noverlap=n_fft-hop)
+    Zxx    = _stft_numpy(data,      n_fft=n_fft, hop=hop)
+    Znoise = _stft_numpy(noise_ref, n_fft=n_fft, hop=hop)
     noise_p   = np.mean(np.abs(Znoise), axis=1, keepdims=True)
-    Zxx_clean = np.maximum(np.abs(Zxx) - noise_p * strength, 0) * np.exp(1j * np.angle(Zxx))
-    _, out = scipy_signal.istft(Zxx_clean, fs=sr, nperseg=n_fft, noverlap=n_fft-hop)
-    return np.clip(out[:len(data)].astype("float32"), -1, 1)
+    Zxx_clean = (np.maximum(np.abs(Zxx) - noise_p * strength, 0)
+                 * np.exp(1j * np.angle(Zxx)))
+    out = _istft_numpy(Zxx_clean, n_fft=n_fft, hop=hop, length=len(data))
+    return np.clip(out.astype("float32"), -1, 1)
 
 
 # ============================================================
@@ -106,7 +137,7 @@ class ClipEditorWindow:
 
         fp = clip_data.get("filepath")
         if not fp or not os.path.exists(fp):
-            messagebox.showerror("Erreur", f"Fichier introuvable :\n{fp}")
+            messagebox.showerror("Error", f"Fichier introuvable :\n{fp}")
             return
 
         self.filepath  = fp
@@ -127,6 +158,7 @@ class ClipEditorWindow:
         self.win.title(f"mini_daw — Éditeur : {clip_data.get('label','clip')}")
         self.win.configure(bg="#0f0f0f")
         self.win.resizable(True, True)
+        self.win.protocol("WM_DELETE_WINDOW", self._on_close)
 
         # Taille adaptée à l'écran
         sw = self.win.winfo_screenwidth()
@@ -143,8 +175,6 @@ class ClipEditorWindow:
         except Exception:
             pass
 
-        self.win.protocol("WM_DELETE_WINDOW", self._on_close)
-        self.win.grab_set()
         self._build_ui()
         self.win.after(100, lambda: self._draw_waveform(self.data))
 
@@ -169,10 +199,10 @@ class ClipEditorWindow:
         tk.Frame(self.win, bg="#222222", height=1).pack(fill="x", side="top")
 
         # ── Pied de page fixe (toujours visible) ──────────────
-        footer = tk.Frame(self.win, bg="#0a0a0a")
+        footer = tk.Frame(self.win, bg="#0d1a2a")
         footer.pack(fill="x", side="bottom")
 
-        tk.Frame(footer, bg="#222222", height=1).pack(fill="x")
+        tk.Frame(footer, bg="#00b4d8", height=2).pack(fill="x")
 
         # Progression + statut dans le footer
         self.progress_var = tk.IntVar(value=0)
@@ -180,66 +210,95 @@ class ClipEditorWindow:
                         maximum=100).pack(fill="x", padx=12, pady=(6, 2))
 
         self.status_lbl = tk.Label(footer,
-                                    text="Prêt  —  ▶ Prévisualiser → ✔ Appliquer → ⬆ Envoyer",
-                                    bg="#0a0a0a", fg="#4CAF50",
+                                    text="Prêt  —  ▶ Preview → ✔ Appliquer → ⬆ Timeline",
+                                    bg="#0d1a2a", fg="#4CAF50",
                                     font=("Segoe UI", 8))
         self.status_lbl.pack(anchor="w", padx=14, pady=(0, 4))
 
-        tk.Frame(footer, bg="#333333", height=1).pack(fill="x")
+        tk.Frame(footer, bg="#1a2a3a", height=1).pack(fill="x")
 
-        btn_bar = tk.Frame(footer, bg="#0a0a0a", pady=10)
-        btn_bar.pack(fill="x", padx=12)
+        btn_bar = tk.Frame(footer, bg="#0d1a2a", pady=8)
+        btn_bar.pack(fill="x", padx=8)
 
-        # ▶ Prévisualiser
-        tk.Button(btn_bar, text="▶  Prévisualiser",
-                  font=("Segoe UI", 9),
-                  bg="#0d3b4f", fg="#00b4d8",
-                  activebackground="#00b4d8", activeforeground="white",
-                  relief="flat", padx=12, pady=8,
-                  cursor="hand2",
-                  command=self._preview_fx).pack(side="left", padx=(0, 4))
+        def _lighten(c):
+            try:
+                r = min(255, int(c[1:3],16)+25)
+                g = min(255, int(c[3:5],16)+25)
+                b = min(255, int(c[5:7],16)+25)
+                return f"#{r:02x}{g:02x}{b:02x}"
+            except Exception:
+                return c
 
-        # ✔ Appliquer les effets
-        self.btn_apply_fx = tk.Button(
-            btn_bar,
-            text="✔  Appliquer les effets",
-            font=("Segoe UI", 9, "bold"),
-            bg="#FFC107", fg="#0a0a0a",
-            activebackground="#FFD54F",
-            relief="flat", padx=14, pady=8,
-            cursor="hand2",
-            command=self._apply_fx_to_data)
-        self.btn_apply_fx.pack(side="left", padx=4)
+        def _pill(parent, text, bg, fg, cmd, store=None):
+            """
+            Bouton pill avec vrais coins arrondis via create_arc.
+            Rendu stable même avant affichage car largeur calculée
+            immédiatement sans winfo_reqwidth().
+            """
+            # Estimer la largeur d'après la longueur du texte
+            W = max(60, len(text) * 7 + 26)
+            H = 26
+            R = 13   # rayon des coins = H/2 → capsule parfaite
 
-        # ⬆ Envoyer à la timeline
-        self.btn_send = tk.Button(
-            btn_bar,
-            text="⬆  Envoyer à la timeline",
-            font=("Segoe UI", 10, "bold"),
-            bg="#4CAF50", fg="white",
-            activebackground="#66BB6A",
-            relief="flat", padx=16, pady=8,
-            cursor="hand2",
-            command=self._send_to_timeline)
-        self.btn_send.pack(side="left", padx=4)
+            cv = tk.Canvas(parent, width=W, height=H,
+                           highlightthickness=0, bg="#0a0a0a",
+                           cursor="hand2")
+            cv.pack(side="left", padx=3, pady=3)
 
-        # ↺ Reset
-        tk.Button(btn_bar, text="↺  Reset",
-                  bg="#1e1e1e", fg="#888888",
-                  activebackground="#333",
-                  relief="flat", padx=10, pady=8,
-                  font=("Segoe UI", 8),
-                  cursor="hand2",
-                  command=self._reset_audio).pack(side="left", padx=4)
+            def _draw(color=bg):
+                cv.delete("all")
+                # Corps central
+                cv.create_rectangle(R, 0, W-R, H,
+                                    fill=color, outline="")
+                # Demi-cercle gauche
+                cv.create_arc(0, 0, R*2, H,
+                              start=90, extent=180,
+                              fill=color, outline="", style="pieslice")
+                # Demi-cercle droit
+                cv.create_arc(W-R*2, 0, W, H,
+                              start=270, extent=180,
+                              fill=color, outline="", style="pieslice")
+                # Texte centré
+                cv.create_text(W//2, H//2, text=text, fill=fg,
+                               font=("Segoe UI", 8, "bold"), anchor="center")
 
-        # ✕ Fermer
-        tk.Button(btn_bar, text="✕  Fermer",
-                  font=("Segoe UI", 9),
-                  bg="#2a2a2a", fg="white",
-                  activebackground="#444",
-                  relief="flat", padx=12, pady=8,
-                  cursor="hand2",
-                  command=self._on_close).pack(side="right")
+            _draw()
+            cv.bind("<ButtonPress-1>",   lambda e: (_draw("#3a3a3a"), cmd()))
+            cv.bind("<ButtonRelease-1>", lambda e: _draw(bg))
+            cv.bind("<Enter>",           lambda e: _draw(_lighten(bg)))
+            cv.bind("<Leave>",           lambda e: _draw(bg))
+            if store is not None:
+                store[0] = cv
+                store[1] = _draw
+            cv._set_color = _draw
+            return cv
+
+        _pill(btn_bar, "▶ Preview",   "#0d3b4f", "#00b4d8", self._preview_fx)
+
+        _apply_ref = [None, None]
+        _pill(btn_bar, "✔ Appliquer", "#FFC107", "#0a0a0a",
+              self._apply_fx_to_data, store=_apply_ref)
+        self._btn_apply_cv  = _apply_ref[0]
+        self._btn_apply_draw = _apply_ref[1]
+
+        _send_ref = [None, None]
+        _pill(btn_bar, "⬆ Timeline",  "#4CAF50", "white",
+              self._send_to_timeline, store=_send_ref)
+        self._btn_send_cv   = _send_ref[0]
+        self._btn_send_draw = _send_ref[1]
+
+        _pill(btn_bar, "↺ Reset",     "#1e1e1e", "#888888", self._reset_audio)
+        _pill(btn_bar, "✕ Fermer",    "#2a2a2a", "white",   self._on_close)
+
+        # Compatibilité : btn_apply_fx et btn_send pointent sur les canvas
+        self.btn_apply_fx = type("Btn", (), {
+            "config": lambda self_, **kw: None,
+            "configure": lambda self_, **kw: None,
+        })()
+        self.btn_send = type("Btn", (), {
+            "config": lambda self_, **kw: None,
+            "configure": lambda self_, **kw: None,
+        })()
 
         # ── Zone centrale scrollable ───────────────────────────
         outer = tk.Frame(self.win, bg="#0f0f0f")
@@ -262,10 +321,10 @@ class ClipEditorWindow:
         scroll_canvas.bind("<Configure>", lambda e: scroll_canvas.itemconfig(
             self._scroll_win_id, width=e.width))
 
-        # Mousewheel
+        # Mousewheel — bind local uniquement (évite pollution fenêtre principale)
         def _on_mousewheel(e):
             scroll_canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
-        scroll_canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        scroll_canvas.bind("<MouseWheel>", _on_mousewheel)
 
         self._build_content(self.content)
 
@@ -274,58 +333,105 @@ class ClipEditorWindow:
     # ============================================================
     def _build_content(self, parent):
 
-        # --- TRANSPORT ---
-        transport = tk.Frame(parent, bg="#0d0d0d", pady=6)
+        # --- TRANSPORT compact arrondi ---
+        transport = tk.Frame(parent, bg="#0d0d0d", pady=4)
         transport.pack(fill="x", padx=0)
 
-        self.btn_stop_t = tk.Button(
-            transport, text="⏹", font=("Segoe UI", 14),
-            bg="#2a2a2a", fg="white", activebackground="#555",
-            relief="flat", width=3, cursor="hand2",
-            command=self._transport_stop)
-        self.btn_stop_t.pack(side="left", padx=(12, 4))
+        def _lighten_t(c):
+            try:
+                return "#{:02x}{:02x}{:02x}".format(
+                    min(255,int(c[1:3],16)+20),
+                    min(255,int(c[3:5],16)+20),
+                    min(255,int(c[5:7],16)+20))
+            except Exception:
+                return c
 
-        self.btn_play_t = tk.Button(
-            transport, text="▶", font=("Segoe UI", 14),
-            bg="#4CAF50", fg="white", activebackground="#66BB6A",
-            relief="flat", width=3, cursor="hand2",
-            command=self._transport_play)
-        self.btn_play_t.pack(side="left", padx=4)
+        def _round_btn_e(par, text, bg, fg, cmd, size=30, r=10):
+            """Bouton carré à coins arrondis via create_arc."""
+            cv = tk.Canvas(par, width=size, height=size,
+                           bg="#0d0d0d", highlightthickness=0, cursor="hand2")
+            def _draw(color=bg):
+                cv.delete("all")
+                # Corps
+                cv.create_rectangle(r, 0, size-r, size, fill=color, outline="")
+                cv.create_rectangle(0, r, size, size-r, fill=color, outline="")
+                # 4 coins arrondis via arc
+                cv.create_arc(0,        0,        r*2, r*2,
+                              start=90,  extent=90, fill=color, outline="", style="pieslice")
+                cv.create_arc(size-r*2, 0,        size, r*2,
+                              start=0,   extent=90, fill=color, outline="", style="pieslice")
+                cv.create_arc(0,        size-r*2, r*2, size,
+                              start=180, extent=90, fill=color, outline="", style="pieslice")
+                cv.create_arc(size-r*2, size-r*2, size, size,
+                              start=270, extent=90, fill=color, outline="", style="pieslice")
+                cv.create_text(size//2, size//2, text=text, fill=fg,
+                               font=("Segoe UI", 10))
+            _draw()
+            cv.bind("<ButtonPress-1>",   lambda e: (_draw("#444"), cmd()))
+            cv.bind("<ButtonRelease-1>", lambda e: _draw(bg))
+            cv.bind("<Enter>",           lambda e: _draw(_lighten_t(bg)))
+            cv.bind("<Leave>",           lambda e: _draw(bg))
+            cv._set_color = lambda c: _draw(c)
+            return cv
 
-        self.btn_rec_t = tk.Button(
-            transport, text="●", font=("Segoe UI", 14),
-            bg="#c0392b", fg="white", activebackground="#e74c3c",
-            relief="flat", width=3, cursor="hand2",
-            command=self._transport_rec)
-        self.btn_rec_t.pack(side="left", padx=4)
+        self.btn_stop_t = _round_btn_e(transport,"⏹","#2a2a2a","white",
+                                        self._transport_stop)
+        self.btn_stop_t.pack(side="left", padx=(10,3), pady=4)
+
+        self.btn_play_t = _round_btn_e(transport,"▶","#4CAF50","white",
+                                        self._transport_play)
+        self.btn_play_t.pack(side="left", padx=3, pady=4)
+
+        self.btn_rec_t  = _round_btn_e(transport,"●","#c0392b","white",
+                                        self._transport_rec)
+        self.btn_rec_t.pack(side="left", padx=3, pady=4)
 
         self.timer_lbl = tk.Label(
             transport, text="00:00.000",
             bg="#0d0d0d", fg="#cccccc",
-            font=("Consolas", 10))
-        self.timer_lbl.pack(side="left", padx=16)
+            font=("Consolas", 9))
+        self.timer_lbl.pack(side="left", padx=12)
 
         tk.Frame(parent, bg="#222222", height=1).pack(fill="x")
 
-        # --- WAVEFORM ---
+        # --- WAVEFORM scrollable + règle des mesures ---
         wf_frame = tk.Frame(parent, bg="#111111")
-        wf_frame.pack(fill="x", padx=12, pady=6)
+        wf_frame.pack(fill="both", expand=True, padx=12, pady=6)
 
         tk.Label(wf_frame,
-                 text="Waveform — clic pour repositionner · glisser pour sélectionner",
+                 text="Waveform — clic pour repositionner · glisser pour sélectionner · molette pour zoomer",
                  bg="#111111", fg="#444444",
                  font=("Segoe UI", 7)).pack(anchor="w", padx=4)
 
-        self.wf_canvas = tk.Canvas(wf_frame, bg="#111111",
-                                    height=90, highlightthickness=0,
-                                    cursor="crosshair")
-        self.wf_canvas.pack(fill="x", padx=4, pady=4)
-        self.wf_canvas.bind("<ButtonPress-1>",  self._wf_press)
-        self.wf_canvas.bind("<B1-Motion>",       self._wf_drag)
-        self.wf_canvas.bind("<ButtonRelease-1>", self._wf_release)
+        # Règle des mesures (temps)
+        self.ruler_canvas = tk.Canvas(wf_frame, bg="#0a0a0a",
+                                       height=18, highlightthickness=0)
+        self.ruler_canvas.pack(fill="x", padx=4, pady=(2,0))
 
-        self._sel_x0 = self._sel_x1 = None
-        self._sel_rect    = None
+        # Waveform dans un frame avec scrollbar horizontale
+        wf_inner = tk.Frame(wf_frame, bg="#111111")
+        wf_inner.pack(fill="both", expand=True, padx=4, pady=(0,0))
+
+        self.wf_canvas = tk.Canvas(wf_inner, bg="#111111",
+                                    height=160, highlightthickness=0,
+                                    cursor="crosshair")
+        self.wf_canvas.pack(fill="both", expand=True, side="top")
+
+        wf_hscroll = tk.Scrollbar(wf_frame, orient="horizontal",
+                                   command=self._wf_scroll_x)
+        wf_hscroll.pack(fill="x", padx=4, pady=(0,2))
+        self._wf_hscroll    = wf_hscroll
+        self._wf_zoom_px    = 100   # pixels par seconde dans la waveform
+        self._wf_offset_px  = 0     # décalage horizontal en pixels
+        self._wf_total_px   = 100   # largeur totale de la waveform zoomée
+
+        self.wf_canvas.bind("<ButtonPress-1>",   self._wf_press)
+        self.wf_canvas.bind("<B1-Motion>",        self._wf_drag)
+        self.wf_canvas.bind("<ButtonRelease-1>",  self._wf_release)
+        self.wf_canvas.bind("<MouseWheel>",       self._wf_zoom)
+
+        self._sel_x0       = self._sel_x1 = None
+        self._sel_rect     = None
         self._dragging_sel = False
 
         self.sel_label = tk.Label(wf_frame, text="Aucune sélection",
@@ -341,16 +447,32 @@ class ClipEditorWindow:
                  bg="#0f0f0f", fg="#cccccc",
                  font=("Segoe UI", 9, "bold")).pack(side="left", padx=(0, 8))
 
-        for txt, cmd in [
-            ("Garder la sélection",    self._cut_keep),
-            ("Supprimer la sélection", self._cut_remove),
-        ]:
-            tk.Button(cut_frame, text=txt,
-                      bg="#2a2a2a", fg="white",
-                      activebackground="#555",
-                      relief="flat", padx=10, pady=4,
-                      font=("Segoe UI", 8), cursor="hand2",
-                      command=cmd).pack(side="left", padx=4)
+        def _cut_pill(par, text, color, cmd):
+            W = max(60, len(text)*7+26); H=24; R=12
+            cv = tk.Canvas(par, width=W, height=H,
+                           highlightthickness=0, bg="#0f0f0f", cursor="hand2")
+            cv.pack(side="left", padx=4)
+            def _d(c=color):
+                cv.delete("all")
+                cv.create_rectangle(R,0,W-R,H,fill=c,outline="")
+                cv.create_rectangle(0,R//2,W,H-R//2,fill=c,outline="")
+                cv.create_arc(0,0,R*2,H,start=90,extent=180,
+                              fill=c,outline="",style="pieslice")
+                cv.create_arc(W-R*2,0,W,H,start=270,extent=180,
+                              fill=c,outline="",style="pieslice")
+                cv.create_text(W//2,H//2,text=text,fill="white",
+                               font=("Segoe UI",7,"bold"),anchor="center")
+            _d()
+            cv.bind("<ButtonPress-1>",   lambda e: (_d("#555"),cmd()))
+            cv.bind("<ButtonRelease-1>", lambda e: _d(color))
+            cv.bind("<Enter>", lambda e: _d(
+                "#{:02x}{:02x}{:02x}".format(
+                    min(255,int(color[1:3],16)+20),
+                    min(255,int(color[3:5],16)+20),
+                    min(255,int(color[5:7],16)+20))))
+            cv.bind("<Leave>", lambda e: _d(color))
+        _cut_pill(cut_frame,"✂ Garder",   "#2a7a4f", self._cut_keep)
+        _cut_pill(cut_frame,"✂ Supprimer","#7a2a2a", self._cut_remove)
 
         tk.Frame(parent, bg="#1e1e1e", height=1).pack(fill="x", padx=12, pady=4)
 
@@ -414,17 +536,14 @@ class ClipEditorWindow:
             row = tk.Frame(sliders, bg="#141414")
             row.pack(fill="x", pady=1)
             tk.Label(row, text=label, bg="#141414", fg="#888888",
-                     font=("Segoe UI", 8), width=14,
+                     font=("Segoe UI", 7), width=12,
                      anchor="w").pack(side="left")
             var = tk.IntVar(value=default)
             self._fx_vars[var_key] = var
             tk.Label(row, textvariable=var, bg="#141414", fg="#4CAF50",
-                     font=("Segoe UI", 8), width=4).pack(side="right")
-            tk.Scale(row, variable=var, from_=mn, to=mx,
-                     orient="horizontal", bg="#141414", fg="white",
-                     troughcolor="#2a2a2a", highlightthickness=0,
-                     showvalue=False, length=220).pack(
-                         side="left", fill="x", expand=True)
+                     font=("Segoe UI", 7), width=4).pack(side="right")
+            # Slider arrondi via Canvas (style track compact)
+            self._make_fx_slider(row, var, mn, mx)
 
         self._toggle_fx(key)
 
@@ -439,34 +558,171 @@ class ClipEditorWindow:
                 except Exception:
                     pass
 
+    def _make_fx_slider(self, parent, var, mn, mx, color="#00b4d8"):
+        """Slider compact arrondi identique aux sliders Vol/Pan des pistes."""
+        LENGTH = 120
+        H      = 14
+        cv = tk.Canvas(parent, width=LENGTH, height=H,
+                       bg="#141414", highlightthickness=0, cursor="hand2")
+        cv.pack(side="left", padx=4)
+        r = H // 2
+
+        def _draw(val=None):
+            cv.delete("all")
+            pct   = (var.get() - mn) / max(1, mx - mn)
+            track_y = H // 2
+            # Track fond arrondi
+            cv.create_line(r, track_y, LENGTH-r, track_y,
+                           fill="#333333", width=5, capstyle="round")
+            # Track rempli
+            fill_x = r + pct * (LENGTH - 2*r)
+            if fill_x > r:
+                cv.create_line(r, track_y, fill_x, track_y,
+                               fill=color, width=5, capstyle="round")
+            # Thumb circulaire
+            tx = int(r + pct * (LENGTH - 2*r))
+            cv.create_oval(tx-r+1, 1, tx+r-1, H-1,
+                           fill="white", outline="#888888")
+
+        def _click(e):
+            pct = max(0.0, min(1.0, e.x / LENGTH))
+            var.set(int(mn + pct * (mx - mn)))
+            _draw()
+
+        cv.bind("<ButtonPress-1>", _click)
+        cv.bind("<B1-Motion>",     _click)
+        var.trace_add("write", lambda *_: _draw())
+        _draw()
+        return cv
+
     # ============================================================
     # WAVEFORM
     # ============================================================
     def _draw_waveform(self, data, color="#00b4d8"):
+        self._wf_data = data   # garder pour redessiner au scroll/zoom
         self.wf_canvas.update_idletasks()
-        W = self.wf_canvas.winfo_width()
-        H = 90
-        if W < 10:
-            W = 560
+        W = self.wf_canvas.winfo_width() or 600
+        H = max(100, self.wf_canvas.winfo_height() or 160)
+        sr  = self.sr
+        n   = len(data)
+        dur = max(0.001, self.duration)
+
+        # Pixels par seconde selon zoom
+        pps = self._wf_zoom_px
+        self._wf_total_px = int(dur * pps)
+        off = self._wf_offset_px
+
+        # Mettre à jour la scrollbar
+        try:
+            visible_frac = min(1.0, W / max(self._wf_total_px, W))
+            start_frac   = off / max(self._wf_total_px - W, 1)
+            self._wf_hscroll.set(start_frac,
+                                 start_frac + visible_frac)
+        except Exception:
+            pass
+
         self.wf_canvas.delete("waveform")
         self.wf_canvas.create_rectangle(0, 0, W, H,
-                                         fill="#111111", outline="",
+                                         fill="#0d0d0d", outline="",
                                          tags="waveform")
-        n    = len(data)
         mid  = H // 2
-        step = max(1, n // W)
-        for px in range(W):
-            chunk = data[px * step: min(px * step + step, n)]
-            if not len(chunk):
-                continue
-            amp = float(np.max(np.abs(chunk)))
-            h   = int(amp * mid * 0.9)
-            self.wf_canvas.create_line(
-                px, mid - h, px, mid + h, fill=color, tags="waveform")
+        # Dessiner seulement la portion visible
+        t0   = off / pps
+        t1   = (off + W) / pps
+        i0   = max(0, int(t0 * sr))
+        i1   = min(n, int(t1 * sr) + 1)
+
+        if i1 > i0 and W > 0:
+            seg_w    = max(1, (i1 - i0) // W)
+            for px in range(W):
+                si = i0 + px * (i1 - i0) // W
+                ei = min(si + seg_w, n)
+                if si >= ei:
+                    continue
+                chunk = data[si:ei]
+                amp   = float(np.max(np.abs(chunk)))
+                h     = int(amp * mid * 0.88)
+                self.wf_canvas.create_line(
+                    px, mid - h, px, mid + h,
+                    fill=color, tags="waveform")
+
         self.wf_canvas.create_line(0, mid, W, mid,
-                                    fill="#2a2a2a", tags="waveform")
+                                    fill="#333333", tags="waveform")
         self._redraw_selection()
         self._draw_ph_line()
+        self._draw_ruler()
+
+    # ── Waveform scroll / zoom ─────────────────────────────────
+    def _wf_scroll_x(self, *args):
+        """Callback de la scrollbar horizontale de la waveform."""
+        if args[0] == "moveto":
+            frac = float(args[1])
+            W    = self.wf_canvas.winfo_width() or 600
+            self._wf_offset_px = int(frac * max(self._wf_total_px - W, 0))
+        elif args[0] == "scroll":
+            delta = int(args[1]) * 20
+            W     = self.wf_canvas.winfo_width() or 600
+            self._wf_offset_px = max(0, min(
+                self._wf_offset_px + delta,
+                max(0, self._wf_total_px - W)))
+        self._draw_waveform(self._wf_data if hasattr(self, "_wf_data")
+                            else self.data)
+
+    def _wf_zoom(self, event):
+        """Ctrl+molette ou molette → zoom horizontal de la waveform."""
+        factor = 1.15 if event.delta > 0 else 1/1.15
+        self._wf_zoom_px = max(20, min(2000, self._wf_zoom_px * factor))
+        self._draw_waveform(self._wf_data if hasattr(self, "_wf_data")
+                            else self.data)
+
+    def _draw_ruler(self):
+        """Règle des temps — graduations sur toute la longueur visible."""
+        try:
+            self.ruler_canvas.delete("all")
+            self.ruler_canvas.configure(bg="#0a0a0a")
+            W   = self.ruler_canvas.winfo_width() or 600
+            pps = self._wf_zoom_px
+            off = self._wf_offset_px
+
+            # Fond
+            self.ruler_canvas.create_rectangle(
+                0, 0, W, 18, fill="#0a0a0a", outline="")
+
+            # Intervalle auto selon zoom
+            for iv in [0.01,0.025,0.05,0.1,0.25,0.5,1.0,2.0,5.0,10.0,30.0,60.0,120.0]:
+                if iv * pps >= 40:
+                    interval = iv
+                    break
+            else:
+                interval = 120.0
+
+            # t de départ = premier multiple d'interval visible
+            t_start = max(0.0, (off / pps) - interval)
+            t_start = (t_start // interval) * interval
+            t       = t_start
+            last_lbl_x = -999
+
+            while True:
+                x = int(t * pps - off)
+                if x > W:
+                    break
+                if x >= 0:
+                    # Tick
+                    h = 14 if round(t % (interval*4), 6) == 0 else 8
+                    self.ruler_canvas.create_line(
+                        x, 18-h, x, 18, fill="#555555", width=1)
+                    # Label si assez d'espace
+                    if x - last_lbl_x >= 36:
+                        lbl = (f"{int(t)}s"    if t >= 1 and t == int(t)
+                               else f"{t:.1f}s" if t >= 1
+                               else f"{int(t*1000)}ms")
+                        self.ruler_canvas.create_text(
+                            x+2, 4, text=lbl, anchor="w",
+                            fill="#aaaaaa", font=("Segoe UI", 6))
+                        last_lbl_x = x
+                t = round(t + interval, 9)
+        except Exception:
+            pass
 
     def _redraw_selection(self):
         self.wf_canvas.delete("sel_rect")
@@ -480,18 +736,27 @@ class ClipEditorWindow:
 
     def _draw_ph_line(self):
         self.wf_canvas.delete("ph_line")
-        W   = max(1, self.wf_canvas.winfo_width())
-        dur = max(0.001, self.duration)
-        x   = max(0, min(int(self._ph_pos / dur * W), W))
-        self.wf_canvas.create_line(x, 0, x, 90,
-                                    fill="#ff4444", width=2,
-                                    tags="ph_line")
+        pps = self._wf_zoom_px
+        off = self._wf_offset_px
+        x   = int(self._ph_pos * pps - off)
+        W   = self.wf_canvas.winfo_width() or 600
+        H = self.wf_canvas.winfo_height() or 160
+        if 0 <= x <= W:
+            self.wf_canvas.create_line(x, 0, x, H,
+                                        fill="#ff4444", width=2,
+                                        tags="ph_line")
 
     def _px_to_time(self, px):
-        W = max(1, self.wf_canvas.winfo_width())
-        return max(0.0, min(px / W * self.duration, self.duration))
+        """Convertit un pixel écran en temps, tenant compte du zoom/offset."""
+        pps = self._wf_zoom_px
+        off = self._wf_offset_px
+        t   = (px + off) / pps
+        return max(0.0, min(t, self.duration))
 
     def _wf_press(self, event):
+        # Stopper la lecture en cours avant de repositionner
+        if self._is_playing or self._is_recording:
+            self._transport_stop()
         self._dragging_sel  = False
         self._drag_start_x  = event.x
         self._sel_x0 = self._sel_x1 = None
@@ -573,7 +838,7 @@ class ClipEditorWindow:
             return
         self._is_playing = True
         self._stop_event.clear()
-        self.btn_play_t.config(bg="#66BB6A")
+        self.btn_play_t._set_color("#66BB6A")
         self._play_start = time.time()
 
         data_snap = self.data.copy()
@@ -600,7 +865,7 @@ class ClipEditorWindow:
                 print(f"[ClipEditor] play: {e}")
             finally:
                 self._is_playing = False
-                self.win.after(0, lambda: self.btn_play_t.config(bg="#4CAF50"))
+                self.win.after(0, lambda: self.btn_play_t._set_color("#4CAF50"))
                 self.win.after(0, lambda: self._set_status("Prêt", "#4CAF50"))
 
         threading.Thread(target=_play, daemon=True).start()
@@ -613,8 +878,8 @@ class ClipEditorWindow:
             sd.stop()
         except Exception:
             pass
-        self.btn_play_t.config(bg="#4CAF50")
-        self.btn_rec_t.config(bg="#c0392b")
+        self.btn_play_t._set_color("#4CAF50")
+        self.btn_rec_t._set_color("#c0392b")
         self._ph_pos = self._play_offset
         self._draw_ph_line()
         self._update_timer(self._ph_pos)
@@ -631,7 +896,7 @@ class ClipEditorWindow:
         self._is_recording = True
         self._rec_frames   = []
         self._stop_event.clear()
-        self.btn_rec_t.config(bg="#ff0000")
+        self.btn_rec_t._set_color("#ff0000")
         self._set_status("● Enregistrement...", "#f44336")
         self._play_start = time.time()
 
@@ -651,7 +916,7 @@ class ClipEditorWindow:
                 print(f"[ClipEditor] rec: {e}")
             finally:
                 self._is_recording = False
-                self.win.after(0, lambda: self.btn_rec_t.config(bg="#c0392b"))
+                self.win.after(0, lambda: self.btn_rec_t._set_color("#c0392b"))
 
         threading.Thread(target=_rec, daemon=True).start()
 
@@ -787,11 +1052,20 @@ class ClipEditorWindow:
                 self.win.after(0, lambda: self.btn_send.config(
                     state="disabled", text="Sauvegarde..."))
                 stereo   = np.column_stack([self.data, self.data])
-                base     = os.path.splitext(
-                    os.path.basename(self.filepath))[0]
+                # Nom court : garder le nom de base original sans les suffixes _edited_
+                raw_base = os.path.splitext(os.path.basename(self.filepath))[0]
+                # Supprimer tous les suffixes _edited_XXXXXXXXXX
+                import re as _re
+                clean_base = _re.sub(r'_edited_\d+', '', raw_base)
+                clean_base = clean_base[:40]  # max 40 chars
                 ts       = int(time.time())
                 out_path = os.path.join(
-                    EDITED_DIR, f"{base}_edited_{ts}.wav")
+                    EDITED_DIR, f"{clean_base}_v{ts % 100000}.wav")
+                # Éviter écrasement
+                while os.path.exists(out_path):
+                    ts += 1
+                    out_path = os.path.join(
+                        EDITED_DIR, f"{clean_base}_v{ts % 100000}.wav")
                 sf.write(out_path, stereo, self.sr)
                 duration = len(self.data) / self.sr
                 print(f"[ClipEditor] ✔ Fichier sauvegardé : {out_path}")
